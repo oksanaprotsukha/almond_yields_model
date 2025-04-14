@@ -9,7 +9,8 @@
 #' @export
 #'
 #' @examples
-#'
+#' crop_yield_climate_sensitivity(t_min_feb, p_jan)
+#' 
 crop_yield_climate_sensitivity <- function(mean_monthly_min_temp, total_monthly_precip, crop = 'almond') {
   if (crop == 'almond') {
     crop_yield <- (-0.015) * mean_monthly_min_temp - 0.0046 * (mean_monthly_min_temp)^2 - 
@@ -21,12 +22,6 @@ crop_yield_climate_sensitivity <- function(mean_monthly_min_temp, total_monthly_
   max_crop_yield <- max(crop_yield)
   mean_crop_yield <- mean(crop_yield)
   
-  # return(list(
-  #   min_crop_yield = round(min_crop_yield, 2),
-  #   max_crop_yield = round(max_crop_yield, 2),
-  #   mean_crop_yield = round(mean_crop_yield, 2)
-  # ))
-  # 
   return(list(
     min_crop_yield = trunc(min_crop_yield * 100) / 100,
     max_crop_yield = trunc(max_crop_yield * 100) / 100,
