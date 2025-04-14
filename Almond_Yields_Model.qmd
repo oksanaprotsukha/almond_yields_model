@@ -1,0 +1,154 @@
+---
+title: "EDS-230: Assignment 1"
+toc: true
+format:
+  html:
+    embed-resources: true
+    code-fold: false 
+    code-tools: true 
+    mathjax: true
+editor_options: 
+  chunk_output_type: console
+editor: 
+  markdown: 
+    wrap: sentence
+author: 
+  - name: Oksana Protsukha
+    affiliation: Master of Environmental Data Science Program
+date: 2025-04-14
+---
+
+## Objective
+
+::: {.callout-note appearance="simple" icon="false"}
+Implement a simple model of almond yield anomaly response to climate.
+:::
+
+## Implementation
+
+The transfer function used in the model is based on the equation for almond yields from the Lobell et al. 2006 paper \[1\]:
+
+$$
+Y = -0.015T_{n,2} - 0.0046T_{n,2}^2 - 0.07P_1 + 0.0043P_1^2 + 0.28 \quad, R^2_{\text{adj}} = 0.88
+$$ 
+
+
+$$
+T_{n,2}: \text{Temperature in °C.}
+$$
+
+$$
+P_1: \text{Precipitation in mm.}
+$$
+
+$$
+Y: \text{Yield in tons per hectare (t/ha).}
+$$
+
+**Transfer Function**:\
+
+**Inputs**: daily times series of minimum and maximum daily temperatures, and precipitation.\
+**Outputs**: maximum, minimum and mean yield anomaly for an input time series.
+
+## Almond Yield Model Diagram
+
+![Almond Yield Model](assets/almond_yield_model.png)
+
+### Considerations
+
+The model uses climate data from a specific month, whereas the data file contains daily climate data. To maintain model flexibility, the almond yield function is designed to accept pre-processed parameters. Specifically, the daily time series in the input data must be transformed outside the function. This approach separates the function's logic from the structure of the input dataframe.
+
+## Implement the model 
+
+## Data
+
+The `clim.txt` file contains the following columns:
+
+-   **Day**: The day the climate observation was made.
+-   **Month**: The month the climate observation was made.
+-   **Year**: The year the climate observation was made.
+-   **Wy (Water Year)**: The water year corresponding to the observation.
+
+The following columns represent the climate observations for each day:
+
+-   **tmax_c**: Maximum daily temperature in °C.
+-   **tmin_c**: Minimum daily temperature in °C.
+-   **precip**: Precipitation on that day in mm.
+
+## Test the function
+
+**Expected outcome**:\
+
+For the mean minimum temperature, the output stats should be:\
+-   The maximum almond yield anomaly should be approximately 1919.98 ton/acre \
+-   The lowest almond yield anomaly should be approximately -0.35 ton/acre \
+-   The mean almond yield anomaly should be approximately 181.44 ton/acre
+
+## Import and preprocess data
+
+```{r, setup,  message=FALSE, warning=FALSE, results='hide'}
+#| eval: true
+#| echo: false
+#| code-fold: true
+
+# import libraries
+library(here)
+library(lubridate)
+library(tidyverse)
+```
+
+```{r, load_data, message=FALSE, warning=FALSE, results='hide'}
+#| eval: true
+#| echo: true
+#| code-fold: true
+
+# import data
+
+root <- here()
+data <- "data/clim.txt"
+
+df <- read.delim(data, sep = "")
+
+# load the script that calculates almond yield anomaly response to climate
+source(here("R/crop_yield_climate_sensitivity.R"))
+```
+
+```{r, preprocess_data, message=FALSE, warning=FALSE, results='hide'}
+#| eval: true
+#| echo: true
+#| code-fold: false
+
+
+# pre-process data: convert raw inputs into the function parameters
+t_min_feb <- df %>%
+  filter(month == 2) %>%
+  group_by(year) %>%
+  summarise(mean_min_temp = mean(tmin_c)) %>% 
+  pull(mean_min_temp)
+
+t_max_feb <- df %>%
+  filter(month == 2) %>%
+  group_by(year) %>% 
+  summarise(mean_max_temp = mean(tmax_c)) %>% 
+  pull(mean_max_temp)
+
+p_jan <- df %>%
+  filter(month == 1) %>%
+  group_by(wy) %>% 
+  summarise(sum_precip = sum(precip)) %>% 
+  pull(sum_precip)
+```
+
+## Calculate almond yield
+
+```{r}
+#| eval: true
+#| echo: true
+#| code-fold: false
+
+# call almond_yield function
+crop_yield_climate_sensitivity(t_min_feb, p_jan)
+```
+
+### Citations
+[1] Lobell DB, Field CB, Cahill KN, Bonfils C. Impacts of future climate change on California perennial crop yields: Model projections with climate and crop uncertainties. Global Environmental Change. 2006;16(2): 227-239. doi:10.1016/j.gloenvcha.2006.10.004.
