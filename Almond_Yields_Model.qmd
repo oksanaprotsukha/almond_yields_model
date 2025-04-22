@@ -18,6 +18,10 @@ author:
 date: 2025-04-14
 ---
 
+#### Project repository  
+[https://github.com/oksanaprotsukha/almond_yields_model](https://github.com/oksanaprotsukha/almond_yields_model)
+
+
 ## Objective
 
 ::: {.callout-note appearance="simple" icon="false"}

@@ -1,0 +1,374 @@
+---
+title: "EDS-230: Assignment 3"
+toc: true
+format:
+  html:
+    embed-resources: true
+    code-fold: false 
+    code-tools: true 
+    mathjax: true
+editor_options: 
+  chunk_output_type: console
+editor: 
+  markdown: 
+    wrap: sentence
+author: 
+  - name: Oksana Protsukha
+    affiliation: Master of Environmental Data Science Program
+date: 2025-04-21
+---
+
+#### Project repository
+
+<https://github.com/oksanaprotsukha/almond_yields_model>
+
+## Objective
+
+::: {.callout-note appearance="simple" icon="false"}
+1.  Develop a profit model that takes into account an almond yield anomaly response \[1\] to climate model.
+2.  Do a simple informal sensitivity analysis of almond yield profit using at least 2 parameters.
+3.  Create 2 graphs:\
+    3.1. One that shows profit for each year, accounting for uncertainty in the parameters\
+    3.2. One that show how profit in general varies with the parameters
+:::
+
+## Implementation
+
+There are many ways to combine the almond yield and profit functions; e.g. have the profit function "call"/use the almond yield function; or create a wrapper function that calls them in sequence (first the almond yield and then the profit function).
+
+In this model, `almond yield` will be calculated outside the profit function and passed as an input to it. 
+The two parameters tested for profit sensitivity will be `price` and `almond_yield.` Almond yield, in turn, will be simulated by varying precipitation values, which are then passed as inputs to the yield function.
+
+The profit model assumes the following parameters: \
+- `almond yeild` \[1\]\
+- `price per pound, lb`  \[2\] \[3\] \
+- `Operating costs` (labor, fertilizer, irrigation, transportation, pest and disease control, almond tree seedlings) \[4\]\
+- `Fixed costs` (land rent, depreciation of equipment, interest on loans) \[4\]\
+
+For simplification purposes, the model uses NPV to adjust revenue and cost to a set baseline year.
+
+## Almond Yield Profit Model Diagram
+
+![Almond Yield Profit Model](assets/almond_profit_model.png)
+
+The transfer function used in the model is based on the simplified profit formula:
+
+$$
+P = (Price * AlmondYield)_{AdjNPV} - (FixedExpenses + OperatingExpenses)_{AdjNPV}
+$$
+**Note 1**: NPV is used to normalize costs and revenues across multiple years in the past, with the earliest year in the dataset considered the baseline year.
+
+**Note 2**: `Almond_yield` is calculated using an almond yield anomaly response to climate function `almond_yield_response.R`.
+
+## Implement the model
+
+#### Data
+
+The `clim.txt` file contains the following columns:
+
+-   **Day**: The day the climate observation was made.
+-   **Month**: The month the climate observation was made.
+-   **Year**: The year the climate observation was made.
+-   **Wy (Water Year)**: The water year corresponding to the observation.
+
+The following columns represent the climate observations for each day:
+
+-   **tmax_c**: Maximum daily temperature in °C.
+-   **tmin_c**: Minimum daily temperature in °C.
+-   **precip**: Precipitation on that day in mm.
+
+#### Load necessarylibraries
+`
+```{r, setup,  message=FALSE, warning=FALSE, results='hide'}
+#| eval: true
+#| echo: false
+#| code-fold: true
+
+# import libraries
+library(here)
+library(lubridate)
+library(tidyverse)
+library(ggpubr)
+```
+
+#### Import data
+```{r, load-data, message=FALSE, warning=FALSE, results='hide'}
+#| eval: true
+#| echo: true
+#| code-fold: true
+
+# import data
+
+root <- here()
+# filepath <- 'Assignments/almond_yields_model'
+filepath <- ''
+data <- "data/clim.txt"
+
+df <- read.delim(here(filepath, data), sep = "")
+
+# load the script that calculates almond yield anomaly response to climate
+source(here(filepath,"R/almond_yield_response.R"))
+source(here(filepath,"R/compute_NPV.R"))
+source(here(filepath,"R/compute_almond_profit.R"))
+source(here(filepath,"R/remove_outliers.R"))
+
+```
+
+#### Prepare data to compute almond yield 
+```{r, preprocess-data, message=FALSE, warning=FALSE, results='hide'}
+#| eval: true
+#| echo: true
+#| code-fold: true
+
+
+# pre-process data: convert raw inputs into the function parameters
+t_min_feb <- df %>%
+  filter(month == 2) %>%
+  group_by(year) %>%
+  summarise(mean_min_temp = mean(tmin_c)) %>% 
+  pull(mean_min_temp)
+
+p_jan <- df %>%
+  filter(month == 1) %>%
+  group_by(wy) %>% 
+  summarise(sum_precip = sum(precip)) %>% 
+  pull(sum_precip)
+
+year <- unique(df$year[df$month == 1])
+
+# create an input data.frame as a parameter for the almond_yield_response function
+yield_df <- as.data.frame(year)
+yield_df <- yield_df %>% 
+  mutate(
+    mean_monthly_min_temp = t_min_feb,
+    total_monthly_precip = p_jan
+  )
+
+```
+
+### Define Fixed Inputs for the Profit Model
+
+```{r, almond-profit-param, message=FALSE, warning=FALSE, results='hide'}
+#| eval: true
+#| echo: true
+#| code-fold: false
+
+#------- create some sample data for the almond_yield model ----------#
+
+n_years <- length(yield_df$year)
+
+almond_profit_df <- as.data.frame(matrix(nrow = n_years, ncol = 4)) 
+
+# sensitivity for: price & operating cost
+colnames(almond_profit_df) <- c("year", "price", "fixed", "opex")
+
+#---------------- generate price and expense values ------------------#
+
+# add years from yield_df to the almond_profit_df 
+almond_profit_df$year <- yield_df$year
+# generate base_price values assuming that price per pound ranged between 1.08 & 2.66
+base_price <- mean(runif(min = 1.08, max = 2.66, n = n_years))
+almond_profit_df$price <- base_price
+
+# opex is estimated to be $2,833 to $3,008 per acre
+almond_profit_df$opex <- 2833
+
+# fixed cost is estimated to be $1,402 to $1,992 per acre
+almond_profit_df$fixed <- 1402
+
+```
+
+### Model Almond yield uncertainty due to fluctuations in precipitation
+
+#### Explore the data
+
+```{r, almond-yield-uncertainty, message=FALSE, warning=FALSE, results='hide'}
+#| eval: true
+#| echo: true
+#| code-fold: true
+
+# Step 1 - generate uncertainty in precipitation in January due to climate change. 
+# Historical precipitation ranged from 0 to 676.512 in the month of January
+
+# 1.1. explore the data 
+summary(p_jan)
+hist(p_jan, breaks = "FD", main = "Historical Precipitation Levels in January (from 1989 to 2010)", xlab = "Precipitation (mm)")
+```
+
+#### Simulate uncertainty in precipitation and calculate yield
+
+```{r, precip-uncertainty, message=FALSE, warning=FALSE, results='hide'}
+#| eval: true
+#| echo: true
+#| code-fold: false
+
+# 1.2. fit the distribution
+# use gamma distribution (non-negative, right-skewed) to fit historical precipitation data
+fit <- fitdistrplus::fitdist(p_jan, distr = "gamma")
+shape <- fit$estimate["shape"]
+rate <- fit$estimate["rate"]
+
+# 1.3. simulate 20 scenarios of precipitation using gamma distribution
+# rgamma(n, shape, rate = 1, scale = 1/rate)
+set.seed(123)
+n_scenarios <- 20
+
+# precipitation matrix: rows = years, columns = scenarios
+precip_sim <- matrix(rgamma(n_years * n_scenarios, shape = shape, rate = rate),
+                     nrow = n_years, ncol = n_scenarios)
+
+# 1.4. copy min_temp and years values to each precipitation scenario
+temp_sim <- matrix(rep(t_min_feb, n_scenarios), nrow = n_years, ncol = n_scenarios)
+
+# Step 2 - apply almond_yield model to get yield for each each year, across
+# simulate uncertainty in precipitation using map2_dfc from purrr
+
+almond_yield_scenarios <- map2_dfc(
+  as.data.frame(temp_sim),
+  as.data.frame(precip_sim),
+  ~ almond_yield_response(
+      year = yield_df$year,
+      mean_monthly_min_temp = .x,
+      total_monthly_precip = .y
+    )$almond_yield
+)
+
+colnames(almond_yield_scenarios) <- paste0("scenario_", seq_len(ncol(temp_sim)))
+# add back year column
+almond_yield_scenarios$year <- yield_df$year
+
+# transform the dataframe into a long format
+# !year : select all columns except year
+# names_to = "scenario" : transform all column names other than 'year' into row values under a new column named 'scenario'
+# values_to = "almond_yield" : move all values from the transformed columns to a new column named 'almond_yield'
+almond_yield_scenarios_long <- pivot_longer(
+  almond_yield_scenarios, 
+  !year, 
+  names_to = "scenario", 
+  values_to = "almond_yield")
+
+head(almond_yield_scenarios_long)
+
+# Step 3 - Calculate profit
+# generate an input dataframe to calculate profit
+
+# 3.1 add a year 
+almond_profit_scenarios <- almond_yield_scenarios_long %>%
+  left_join(almond_profit_df, by = "year")
+  
+# 3.2 compute profit with a single uncertainty parameter: yield
+almond_profit_yield <- compute_crop_profit(
+  price_per_lb = almond_profit_scenarios$price, 
+  crop_yield = almond_profit_scenarios$almond_yield, 
+  year = almond_profit_scenarios$year, 
+  fixed = almond_profit_df$fixed, 
+  opex = almond_profit_df$opex, 
+  discount = 0.05)
+```
+
+### Simulate price uncertainty
+
+```{r price-uncertainty, message=FALSE, warning=FALSE, results='hide'}
+#| eval: true
+#| echo: true
+#| code-fold: false
+
+# Generate uncertainty in prices due to demand. 
+# Per historical prices we know that prices per pound ranged between 1.08 & 2.66. 
+# We can slightly expand this range to introduce further uncertainty. 
+# Add randomness to simulate real-world price changes
+
+n <- length(almond_profit_scenarios$almond_yield)
+price_sim <- rnorm(mean = base_price, sd = 0.1 * base_price, n = n) 
+
+# make price variable
+almond_profit_scenarios <- almond_profit_scenarios %>% 
+  mutate(
+    price = price_sim
+  )
+  
+# compute profit with a two uncertainty parameters: price & yield 
+almond_profit_yield_price <- compute_crop_profit(
+  price_per_lb = almond_profit_scenarios$price, 
+  crop_yield = almond_profit_scenarios$almond_yield, 
+  year = almond_profit_scenarios$year, 
+  fixed = almond_profit_df$fixed, 
+  opex = almond_profit_df$opex, 
+  discount = 0.05)
+```
+
+
+### Plot: Profit Sensitivity to Crop Yield and Market Price Fluctuations
+
+#### Graph #1 - Impact of almond yield and market price uncertainty on profit over time period
+
+```{r chart-1, message=FALSE, warning=FALSE, results='hide'}
+#| eval: true
+#| echo: true
+#| code-fold: true
+
+# Graph 1
+
+# remove outliers
+almond_profit_yield <- remove_outliers(almond_profit_yield, year, profit)
+almond_profit_yield_price <- remove_outliers(almond_profit_yield_price, year, profit)
+
+# put on one graph
+ggplot(almond_profit_yield, aes(year, profit, group = year)) +
+  geom_boxplot() +
+  labs(y = "Profit: Net Present Values in 1989 Dollars ($/acre)", x = "Year", title = "Uncertainty Due to Price & Yield Fluctuations") +
+  geom_boxplot(data = almond_profit_yield_price, aes(year, profit, group = year), fill = "orange")
+
+# add legend
+almond_profit_yield$uncertainty <- "Almond_yield_only"
+almond_profit_yield_price$uncertainty <- "Almond_yield_and_price"
+tmp <- rbind.data.frame(almond_profit_yield, almond_profit_yield_price)
+ggplot(tmp, aes(as.factor(year), profit, fill = uncertainty)) +
+  geom_boxplot() +
+  labs(y = "Profit: Net Present Values in 1989 Dollars ($/acre)", x = "Year", fill = "Uncertainty Parameters") +
+  scale_fill_manual(values = c("blue", "orange")) +
+  theme_light()+
+  theme(legend.position = "top")
+```
+
+#### Graph #2 - Sensitivity of Profit to Yield and Price Parameters
+
+```{r, chart-2, message=FALSE, warning=FALSE, results='hide'}
+#| eval: true
+#| echo: true
+#| code-fold: true
+
+# Graph 2
+
+p1 <- ggplot(almond_profit_yield_price, aes(x = crop_yield, y = profit, col = price)) +
+  geom_point(alpha = 0.8) +
+  labs(title = "Profit Response to Almond Yield Under Varying Market Prices",
+       x = "Almond Yield (tones/acre)",
+       y = "Profit (USD)")+
+  theme_light()
+
+p2 <- ggplot(almond_profit_yield_price, aes(x = price, y = profit, col = crop_yield)) +
+  geom_point(alpha = 0.8, cex = 2) +
+  labs(title = "Profit Response to Market Price Under Varying Almond Yields",
+       x = "Price (USD/pound)",
+       y = "Profit (USD)")+
+  theme_light()
+
+ggarrange(p1, p2)
+```
+
+### Interpretation
+
+My model shows that almond profit is highly sensitive to almond yield. There is no obvious trend indicating that profit is strongly influenced by price. This is intuitive, as price fluctuations remain within a relatively narrow range in absolute terms. Even when the price drops to its minimum value, profits are still noticeably higher at higher yield levels.
+
+Next, it will be important to model the impact of temperature and precipitation on almond yield.
+
+### Citations
+
+\[1\] Lobell DB, Field CB, Cahill KN, Bonfils C. Impacts of future climate change on California perennial crop yields: Model projections with climate and crop uncertainties.
+Global Environmental Change.\
+2006;16(2): 227-239.\
+doi:10.1016/j.gloenvcha.2006.10.004.\
+\[2\] U.S. Department of Agriculture, Economic Research Service. Almond production and bearing acreage have trended upward in California. Charts of Note. 2023. Available at: https://www.ers.usda.gov/data-products/charts-of-note/chart-detail?chartId=107823. Accessed April 20, 2025.\
+\[3\] Merlo Farming Group. Almond markets. 2023. Available at: https://www.merlofarminggroup.com/markets. Accessed April 20, 2025.\
+\[4\] University of California, Davis. Sample costs to establish an orchard and produce almonds: Organic, San Joaquin Valley North. 2016. Available at: https://coststudyfiles.ucdavis.edu/uploads/cs_public/24/7c/247c069c-8290-4060-aa96-3e556b0f339b/16almondorganicnsjvfinaldraft42716.pdf. Accessed April 20, 2025.
